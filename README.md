@@ -13,7 +13,7 @@ Genshin
 ```
 curl -fsSL "https://raw.githubusercontent.com/billsboard/linux-warp-tracker/main/genshin/genshin-wish-link" | bash -s --
 ```
-
+Optionally having a tool like `xclip` will allow auto-copy to clipboard 
 
 ## Run full script from repository
 Star Rail
