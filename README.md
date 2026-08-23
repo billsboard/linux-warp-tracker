@@ -3,12 +3,17 @@
 Linux ports for the HSR and Genshin warp trackers when running game in Proton for using on StarRailStation and Paimon.moe (Or simular sites).
 
 ## Quickstart
-
-
-
+Star Rail
+```
+curl -fsSL "https://raw.githubusercontent.com/billsboard/linux-warp-tracker/main/star-rail/star-rail-warp-link" | bash -s --
+```
+Genshin
+```
+curl -fsSL "https://raw.githubusercontent.com/billsboard/linux-warp-tracker/main/genshin/genshin-wish-link" | bash -s --
+```
 
 ## Run full script from repository
-Star rail
+Star Rail
 ```
 warp-tracker --star-rail 
 ```
