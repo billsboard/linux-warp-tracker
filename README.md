@@ -27,7 +27,7 @@ warp-tracker --genshin
 
   
 ### Options
-`--prefix /path/to/proton/prefix`: Specify proton prefix to check the path for
-`--cache-file /path/to/cache`: Use a specific Cache_Data
-`--region <region>`: global (default) or china
-`--no-validate`: Return the newest cached URL without testing its auth key
+`--prefix /path/to/proton/prefix`: Specify proton prefix to check the path for  
+`--cache-file /path/to/cache`: Use a specific Cache_Data  
+`--region <region>`: global (default) or china  
+`--no-validate`: Return the newest cached URL without testing its auth key  
