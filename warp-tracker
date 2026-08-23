@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+
+usage() {
+    cat <<'EOF'
+Usage: ./warp-tracker COMMAND [options]
+
+Commands:
+  --genshin    Extract a Genshin Impact wish-history link
+  --star-rail  Extract a Honkai: Star Rail warp-history link
+
+Examples:
+  ./warp-tracker --genshin
+  ./warp-tracker --genshin --prefix /path/to/proton/pfx
+  ./warp-tracker --genshin --help
+  ./warp-tracker --star-rail
+  ./warp-tracker --star-rail --prefix /path/to/proton/pfx
+EOF
+}
+
+case ${1:-} in
+    --genshin)
+        shift
+        exec "$SCRIPT_DIR/genshin/genshin-wish-link" "$@"
+        ;;
+    --star-rail)
+        shift
+        exec "$SCRIPT_DIR/star-rail/star-rail-warp-link" "$@"
+        ;;
+    -h|--help|'')
+        usage
+        ;;
+    *)
+        printf 'Error: unknown command: %s\n\n' "$1" >&2
+        usage >&2
+        exit 2
+        ;;
+esac

@@ -1,0 +1,285 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+PROGRAM=${0##*/}
+REGION=global
+PREFIX=
+CACHE_FILE=
+VALIDATE=1
+
+usage() {
+    cat <<EOF
+Usage: $PROGRAM [options]
+
+Extract the current Genshin Impact wish-history URL from a Proton/Wine install.
+
+Options:
+  --prefix PATH       Proton/Wine prefix (the directory containing drive_c)
+  --cache-file PATH   Use a specific Chromium Cache_Data/data_2 file
+  --region REGION     global (default) or china
+  --no-validate       Return the newest cached URL without testing its auth key
+  -h, --help          Show this help
+EOF
+}
+
+die() {
+    printf 'Error: %s\n' "$*" >&2
+    exit 1
+}
+
+while (($#)); do
+    case $1 in
+        --prefix)
+            (($# >= 2)) || die '--prefix requires a path'
+            PREFIX=$2
+            shift 2
+            ;;
+        --cache-file)
+            (($# >= 2)) || die '--cache-file requires a path'
+            CACHE_FILE=$2
+            shift 2
+            ;;
+        --region)
+            (($# >= 2)) || die '--region requires global or china'
+            REGION=$2
+            shift 2
+            ;;
+        --no-validate)
+            VALIDATE=0
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            die "unknown option: $1"
+            ;;
+    esac
+done
+
+case $REGION in
+    global) API_HOST=public-operation-hk4e-sg.hoyoverse.com ;;
+    china)  API_HOST=public-operation-hk4e.mihoyo.com ;;
+    *) die "unsupported region '$REGION' (use global or china)" ;;
+esac
+
+for dependency in find sort strings grep curl; do
+    command -v "$dependency" >/dev/null 2>&1 ||
+        die "required command not found: $dependency"
+done
+
+declare -a PREFIXES=()
+
+add_prefix() {
+    local candidate=${1%/}
+    [[ -n $candidate && -d $candidate/drive_c ]] || return 0
+
+    local existing
+    for existing in "${PREFIXES[@]:-}"; do
+        [[ $existing == "$candidate" ]] && return 0
+    done
+    PREFIXES+=("$candidate")
+}
+
+newest_cache_under() {
+    local root=$1
+    [[ -d $root ]] || return 1
+
+    find "$root" -type f -path '*/webCaches/*/Cache/Cache_Data/data_2' \
+        -printf '%T@\t%p\n' 2>/dev/null |
+        sort -nr | head -n 1 | cut -f2-
+}
+
+newest_genshin_cache_under() {
+    local root=$1
+    [[ -d $root ]] || return 1
+
+    find "$root" -type f \
+        \( -path '*/GenshinImpact_Data/webCaches/*/Cache/Cache_Data/data_2' \
+           -o -path '*/YuanShen_Data/webCaches/*/Cache/Cache_Data/data_2' \) \
+        -printf '%T@\t%p\n' 2>/dev/null |
+        sort -nr | head -n 1 | cut -f2-
+}
+
+windows_path_to_unix() {
+    local prefix=$1
+    local windows_path=$2
+    local drive=${windows_path:0:1}
+    local relative=${windows_path:3}
+    local drive_link=$prefix/dosdevices/${drive,,}:
+    local drive_root
+
+    relative=${relative//\\//}
+    if [[ -e $drive_link ]]; then
+        drive_root=$(readlink -f "$drive_link") || return 1
+    elif [[ ${drive,,} == c ]]; then
+        drive_root=$prefix/drive_c
+    else
+        return 1
+    fi
+
+    printf '%s/%s\n' "${drive_root%/}" "$relative"
+}
+
+cache_from_log() {
+    local prefix=$1
+    local log windows_path game_dir cache
+
+    while IFS= read -r log; do
+        windows_path=$(grep -aoE '[A-Za-z]:[/\\][^[:cntrl:]]*(GenshinImpact_Data|YuanShen_Data)' "$log" |
+            tail -n 1 || true)
+        [[ -n $windows_path ]] || continue
+
+        game_dir=$(windows_path_to_unix "$prefix" "$windows_path") || continue
+        cache=$(newest_cache_under "$game_dir/webCaches") || true
+        if [[ -n $cache ]]; then
+            printf '%s\n' "$cache"
+            return 0
+        fi
+    done < <(find "$prefix/drive_c/users" -type f -iname output_log.txt 2>/dev/null || true)
+
+    return 1
+}
+
+discover_prefixes() {
+    local candidate steam_root library
+
+    [[ -n ${WINEPREFIX:-} ]] && add_prefix "$WINEPREFIX"
+    [[ -n ${STEAM_COMPAT_DATA_PATH:-} ]] && add_prefix "$STEAM_COMPAT_DATA_PATH/pfx"
+
+    add_prefix "$HOME/.wine"
+
+    for steam_root in \
+        "$HOME/.steam/root" \
+        "$HOME/.steam/steam" \
+        "$HOME/.steam/debian-installation" \
+        "$HOME/.local/share/Steam"; do
+        [[ -d $steam_root/steamapps/compatdata ]] || continue
+        for candidate in "$steam_root"/steamapps/compatdata/*/pfx; do
+            add_prefix "$candidate"
+        done
+
+        if [[ -f $steam_root/steamapps/libraryfolders.vdf ]]; then
+            while IFS= read -r library; do
+                library=${library//\\\\/\\}
+                for candidate in "$library"/steamapps/compatdata/*/pfx; do
+                    add_prefix "$candidate"
+                done
+            done < <(sed -nE 's/^[[:space:]]*"path"[[:space:]]*"([^"]+)".*/\1/p' \
+                "$steam_root/steamapps/libraryfolders.vdf")
+        fi
+    done
+
+    for candidate in "$HOME"/Games/* "$HOME"/.local/share/lutris/runners/wine/*; do
+        add_prefix "$candidate"
+    done
+}
+
+if [[ -n $CACHE_FILE ]]; then
+    [[ -f $CACHE_FILE ]] || die "cache file does not exist: $CACHE_FILE"
+else
+    if [[ -n $PREFIX ]]; then
+        add_prefix "$PREFIX"
+        ((${#PREFIXES[@]})) || die "not a Wine/Proton prefix (drive_c is missing): $PREFIX"
+    else
+        discover_prefixes
+    fi
+
+    ((${#PREFIXES[@]})) || die 'no Proton/Wine prefixes found; pass --prefix PATH'
+
+    declare -a FOUND_CACHES=()
+    for candidate in "${PREFIXES[@]}"; do
+        cache=$(cache_from_log "$candidate") || true
+        [[ -n ${cache:-} ]] && FOUND_CACHES+=("$cache")
+
+        cache=$(newest_genshin_cache_under "$candidate/drive_c") || true
+        [[ -n ${cache:-} ]] && FOUND_CACHES+=("$cache")
+    done
+
+    ((${#FOUND_CACHES[@]})) || {
+        die 'Genshin web cache not found; open Wish History first, or pass --cache-file PATH'
+    }
+
+    CACHE_FILE=$(printf '%s\n' "${FOUND_CACHES[@]}" | while IFS= read -r cache; do
+        printf '%s\t%s\n' "$(stat -c %Y "$cache")" "$cache"
+    done | sort -nr | head -n 1 | cut -f2-)
+fi
+
+printf 'Using cache: %s\n' "$CACHE_FILE" >&2
+
+TEMP_CACHE=$(mktemp "${TMPDIR:-/tmp}/genshin-wish-cache.XXXXXX")
+trap 'rm -f "$TEMP_CACHE"' EXIT
+cp -- "$CACHE_FILE" "$TEMP_CACHE"
+
+mapfile -t LINKS < <(
+    strings -a -n 20 "$TEMP_CACHE" |
+        grep -aoE 'https[^[:space:]"<>]+game_biz=' |
+        awk '!seen[$0]++'
+)
+
+((${#LINKS[@]})) || die 'no wish-history URLs found; open Wish History in game and try again'
+
+build_api_url() {
+    local link=$1 query part filtered=
+
+    [[ $link == *\?* ]] || return 1
+    query=${link#*\?}
+    query=${query%%#*}
+
+    IFS='&' read -r -a parts <<< "$query"
+    for part in "${parts[@]}"; do
+        case $part in
+            lang=*|gacha_type=*|size=*) continue ;;
+        esac
+        [[ -n $part ]] || continue
+        [[ -z $filtered ]] || filtered+=\&
+        filtered+=$part
+    done
+
+    [[ -z $filtered ]] || filtered+=\&
+    printf 'https://%s/gacha_info/api/getGachaLog?%slang=en&gacha_type=301&size=5\n' \
+        "$API_HOST" "$filtered"
+}
+
+WISH_URL=
+for ((index=${#LINKS[@]} - 1; index >= 0; index--)); do
+    candidate=${LINKS[index]}
+    printf '\rChecking cached link %d/%d' "$(( ${#LINKS[@]} - index ))" "${#LINKS[@]}" >&2
+
+    if ((VALIDATE == 0)); then
+        WISH_URL=$candidate
+        break
+    fi
+
+    api_url=$(build_api_url "$candidate") || continue
+    response=$(curl --silent --show-error --max-time 10 \
+        -H 'Accept: application/json' "$api_url" 2>/dev/null) || continue
+
+    if grep -qE '"retcode"[[:space:]]*:[[:space:]]*0' <<< "$response"; then
+        WISH_URL=$candidate
+        break
+    fi
+done
+printf '\n' >&2
+
+[[ -n $WISH_URL ]] || die 'no valid wish-history URL found; reopen Wish History and try again'
+
+clipboard_message='Clipboard utility not found; copy the URL printed below.'
+if command -v wl-copy >/dev/null 2>&1; then
+    if printf '%s' "$WISH_URL" | wl-copy 2>/dev/null; then
+        clipboard_message='Link copied with wl-copy; paste it into Paimon.moe.'
+    fi
+elif command -v xclip >/dev/null 2>&1; then
+    if printf '%s' "$WISH_URL" | xclip -selection clipboard 2>/dev/null; then
+        clipboard_message='Link copied with xclip; paste it into Paimon.moe.'
+    fi
+elif command -v xsel >/dev/null 2>&1; then
+    if printf '%s' "$WISH_URL" | xsel --clipboard --input 2>/dev/null; then
+        clipboard_message='Link copied with xsel; paste it into Paimon.moe.'
+    fi
+fi
+
+printf '%s\n' "$clipboard_message" >&2
+printf '%s\n' "$WISH_URL"
