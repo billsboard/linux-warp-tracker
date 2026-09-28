@@ -216,6 +216,7 @@ mapfile -t LINKS < <(
 sanitize_url() {
     local url=${1%%#*}
     local base query part key filtered=
+    local has_authkey=0
 
     [[ $url == *\?* ]] || return 1
     base=${url%%\?*}
@@ -223,31 +224,33 @@ sanitize_url() {
 
     IFS='&' read -r -a parts <<< "$query"
     for part in "${parts[@]}"; do
+        [[ -n $part ]] || continue
         key=${part%%=*}
         case $key in
-            authkey|authkey_ver|sign_type|game_biz|lang) ;;
-            *) continue ;;
+            page|size|end_id) continue ;;
+            authkey) has_authkey=1 ;;
         esac
         [[ -z $filtered ]] || filtered+=\&
         filtered+=$part
     done
 
-    [[ -n $filtered ]] || return 1
-    printf '%s?%s\n' "$base" "$filtered"
+    ((has_authkey)) || return 1
+    printf '%s?%s&page=1&size=5&end_id=0\n' "$base" "$filtered"
 }
 
 WARP_URL=
 for ((index=${#LINKS[@]} - 1; index >= 0; index--)); do
     candidate=${LINKS[index]}
     printf '\rChecking cached link %d/%d' "$(( ${#LINKS[@]} - index ))" "${#LINKS[@]}" >&2
+    api_url=$(sanitize_url "$candidate") || continue
 
     if ((VALIDATE)); then
         response=$(curl --silent --show-error --max-time 10 \
-            -H 'Accept: application/json' "$candidate" 2>/dev/null) || continue
+            -H 'Accept: application/json' "$api_url" 2>/dev/null) || continue
         grep -qE '"retcode"[[:space:]]*:[[:space:]]*0' <<< "$response" || continue
     fi
 
-    WARP_URL=$(sanitize_url "$candidate") || continue
+    WARP_URL=$api_url
     break
 done
 printf '\n' >&2
